@@ -2,6 +2,7 @@
 import express from 'express';
 import 'dotenv/config';
 import cors from 'cors';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { MongoClient, ObjectId } from 'mongodb';
 
 const app = express();
@@ -25,6 +26,56 @@ app.use(
 );
 
 app.use(express.json({ limit: '1mb' }));
+
+// Better Auth JWT verification. Better Auth runs inside the Next.js client app, so
+// public keys live at `${AUTH_URL}/api/auth/jwks`. Never trust user-supplied identity.
+const authBaseURL =
+  process.env.AUTH_URL || process.env.CLIENT_URL || 'http://localhost:3000';
+const jwks = createRemoteJWKSet(new URL(`${authBaseURL}/api/auth/jwks`));
+
+async function authenticate(req, res, next) {
+  try {
+    const header = req.headers.authorization;
+
+    if (!header?.startsWith('Bearer ')) {
+      return res.status(401).json({
+        message: 'Authentication required.',
+      });
+    }
+
+    const { payload } = await jwtVerify(header.slice(7), jwks, {
+      issuer: authBaseURL,
+      audience: authBaseURL,
+    });
+
+    if (!payload.sub || !payload.email) {
+      return res.status(401).json({
+        message: 'Invalid access token.',
+      });
+    }
+
+    req.user = {
+      id: String(payload.sub),
+      email: String(payload.email).toLowerCase(),
+      name: payload.name ? String(payload.name) : '',
+    };
+
+    return next();
+  } catch {
+    return res.status(401).json({
+      message: 'Invalid or expired access token.',
+    });
+  }
+}
+
+function ownsEvent(event, user) {
+  const ownsById = event.creatorId && String(event.creatorId) === user.id;
+
+  const ownsByEmail =
+    typeof event.creatorEmail === 'string' && event.creatorEmail.toLowerCase() === user.email;
+
+  return Boolean(ownsById || ownsByEmail);
+}
 
 // Check MongoDB URI
 if (!process.env.MONGODB_URI) {
@@ -190,9 +241,12 @@ app.get('/api/events/:id', async (req, res, next) => {
 });
 
 // Create event
-app.post('/api/events', async (req, res, next) => {
+app.post('/api/events', authenticate, async (req, res, next) => {
   try {
-    const data = req.body;
+    const data = {
+      ...req.body,
+      creatorEmail: req.user.email,
+    };
 
     const error = validateEvent(data);
 
@@ -209,7 +263,9 @@ app.post('/api/events', async (req, res, next) => {
       imageURL: cleanText(data.imageURL),
       location: cleanText(data.location),
       eventDate: new Date(data.eventDate).toISOString(),
-      creatorEmail: cleanText(data.creatorEmail).toLowerCase(),
+      creatorId: req.user.id,
+      creatorEmail: req.user.email,
+      creatorName: req.user.name,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -226,7 +282,7 @@ app.post('/api/events', async (req, res, next) => {
 });
 
 // Update event
-app.patch('/api/events/:id', async (req, res, next) => {
+app.patch('/api/events/:id', authenticate, async (req, res, next) => {
   try {
     if (!isValidId(req.params.id)) {
       return res.status(400).json({
@@ -244,9 +300,17 @@ app.patch('/api/events/:id', async (req, res, next) => {
       });
     }
 
+    if (!ownsEvent(existing, req.user)) {
+      return res.status(403).json({
+        message: 'You can only update your own events.',
+      });
+    }
+
+    // Owner identity is never taken from the request body.
     const data = {
       ...existing,
       ...req.body,
+      creatorEmail: existing.creatorEmail,
     };
 
     const error = validateEvent(data);
@@ -285,11 +349,27 @@ app.patch('/api/events/:id', async (req, res, next) => {
 });
 
 // Delete event
-app.delete('/api/events/:id', async (req, res, next) => {
+app.delete('/api/events/:id', authenticate, async (req, res, next) => {
   try {
     if (!isValidId(req.params.id)) {
       return res.status(400).json({
         message: 'Invalid event ID.',
+      });
+    }
+
+    const existing = await eventsCollection.findOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        message: 'Event not found.',
+      });
+    }
+
+    if (!ownsEvent(existing, req.user)) {
+      return res.status(403).json({
+        message: 'You can only delete your own events.',
       });
     }
 
@@ -317,7 +397,7 @@ app.delete('/api/events/:id', async (req, res, next) => {
 });
 
 // Join event
-app.post('/api/events/:id/join', async (req, res, next) => {
+app.post('/api/events/:id/join', authenticate, async (req, res, next) => {
   try {
     if (!isValidId(req.params.id)) {
       return res.status(400).json({
@@ -341,14 +421,8 @@ app.post('/api/events/:id/join', async (req, res, next) => {
       });
     }
 
-    const userEmail = cleanText(req.body?.userEmail).toLowerCase();
-    const userName = cleanText(req.body?.userName);
-
-    if (!isValidEmail(userEmail)) {
-      return res.status(400).json({
-        message: 'A valid user email is required.',
-      });
-    }
+    const userEmail = req.user.email;
+    const userName = req.user.name;
 
     try {
       await joinsCollection.insertOne({
@@ -380,19 +454,55 @@ app.post('/api/events/:id/join', async (req, res, next) => {
 });
 
 // Get joined events
-app.get('/api/joins', async (req, res, next) => {
+app.get('/api/joins', authenticate, async (req, res, next) => {
   try {
-    const email = cleanText(req.query.email).toLowerCase();
-
-    if (!email || !isValidEmail(email)) {
-      return res.status(400).json({
-        message: 'A valid email query is required.',
-      });
-    }
-
-    const joins = await joinsCollection.find({ userEmail: email }).sort({ eventDate: 1 }).toArray();
+    const joins = await joinsCollection
+      .find({ userEmail: req.user.email })
+      .sort({ eventDate: 1 })
+      .toArray();
 
     res.json(joins);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get the signed-in user's own events
+app.get('/api/me/events', authenticate, async (req, res, next) => {
+  try {
+    const events = await eventsCollection
+      .find({
+        $or: [{ creatorId: req.user.id }, { creatorEmail: req.user.email }],
+      })
+      .sort({ eventDate: 1 })
+      .toArray();
+
+    res.json(events);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get events the signed-in user joined
+app.get('/api/me/joined', authenticate, async (req, res, next) => {
+  try {
+    const joins = await joinsCollection.find({ userEmail: req.user.email }).toArray();
+
+    const eventIds = joins
+      .map((join) => join.eventId)
+      .filter((eventId) => typeof eventId === 'string' && isValidId(eventId))
+      .map((eventId) => new ObjectId(eventId));
+
+    if (!eventIds.length) {
+      return res.json([]);
+    }
+
+    const events = await eventsCollection
+      .find({ _id: { $in: eventIds } })
+      .sort({ eventDate: 1 })
+      .toArray();
+
+    res.json(events);
   } catch (error) {
     next(error);
   }
