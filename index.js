@@ -496,7 +496,6 @@ app.post('/api/events/:id/join', authenticate, async (req, res, next) => {
     next(error);
   }
 });
-
 // Get joined events
 app.get('/api/joins', authenticate, async (req, res, next) => {
   try {
