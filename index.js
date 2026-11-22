@@ -160,7 +160,7 @@ function validateEvent(data) {
   return null;
 }
 
-// Home route
+
 app.get('/', (req, res) => {
   res.send('Togetherly API is running.');
 });
