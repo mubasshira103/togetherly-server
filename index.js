@@ -1,4 +1,3 @@
-
 import express from 'express';
 import 'dotenv/config';
 import cors from 'cors';
@@ -10,7 +9,6 @@ const port = process.env.PORT || 5000;
 
 const allowedOrigins = ['http://localhost:3000', process.env.CLIENT_URL].filter(Boolean);
 
-// Middleware
 app.use(
   cors({
     origin(origin, callback) {
@@ -29,8 +27,7 @@ app.use(express.json({ limit: '1mb' }));
 
 // Better Auth JWT verification. Better Auth runs inside the Next.js client app, so
 // public keys live at `${AUTH_URL}/api/auth/jwks`. Never trust user-supplied identity.
-const authBaseURL =
-  process.env.AUTH_URL || process.env.CLIENT_URL || 'http://localhost:3000';
+const authBaseURL = process.env.AUTH_URL || process.env.CLIENT_URL || 'http://localhost:3000';
 const jwks = createRemoteJWKSet(new URL(`${authBaseURL}/api/auth/jwks`));
 
 async function authenticate(req, res, next) {
