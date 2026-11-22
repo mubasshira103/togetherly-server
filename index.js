@@ -393,7 +393,53 @@ app.delete('/api/events/:id', authenticate, async (req, res, next) => {
     next(error);
   }
 });
+// Delete event
+app.delete('/api/events/:id', authenticate, async (req, res, next) => {
+  try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        message: 'Invalid event ID.',
+      });
+    }
 
+    const existing = await eventsCollection.findOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        message: 'Event not found.',
+      });
+    }
+
+    if (!ownsEvent(existing, req.user)) {
+      return res.status(403).json({
+        message: 'You can only delete your own events.',
+      });
+    }
+
+    const result = await eventsCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    if (!result.deletedCount) {
+      return res.status(404).json({
+        message: 'Event not found.',
+      });
+    }
+
+    // Delete related joins
+    await joinsCollection.deleteMany({
+      eventId: req.params.id,
+    });
+
+    res.json({
+      message: 'Event deleted successfully.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 // Join event
 app.post('/api/events/:id/join', authenticate, async (req, res, next) => {
   try {
