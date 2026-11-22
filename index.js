@@ -343,9 +343,9 @@ app.patch('/api/events/:id', authenticate, async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+    api;
   }
 });
-
 // Delete event
 app.delete('/api/events/:id', authenticate, async (req, res, next) => {
   try {
